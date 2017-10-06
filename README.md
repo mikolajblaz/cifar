@@ -46,3 +46,13 @@ The classifiers achieved accuracy of **89.2%** and **84.6**, respectively.
 3. Besides, a simple neural network was trained with no parameters tuning and only one layer with 30 neurons.
 Trained on a dataset of size 10000, it achieved accuracy of 86.4% on a test score.
 
+
+
+These weak classifiers were then transformed into a stronger one using a toy
+example of a voting ensemble.
+If at least two classifiers shared a prediction, it was chosen as a final one.
+Otherwise, a prediction of an SVM classifier was considered as final.
+This approach gave an accuracy of 88.8%.
+This is slightly less than accuracy of a single SVM model.
+It means that weak RF and NN were able to "fool" SVM model and lower the accuracy score.
+Some improvements to the ensembling method should be introduced, e.g. weighted voting or blending.

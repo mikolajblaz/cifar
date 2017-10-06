@@ -204,7 +204,6 @@ def train_model(clf, X, y, subset_size=None, clf_file=None):
     :param clf: sklearn classifier
     :param subset_size: if not None, the size of (randomly chosen) subset of X, y to use for training
     :param clf_file: load model from this file, or save model there after training
-
      """
 
     if clf_file is not None and os.path.exists(clf_file):
@@ -443,7 +442,7 @@ def visualize_cnn_codes(X_codes, y, n_codes=1000):
 
 def train_svm_on_codes(X_codes, y, X_codes_test, y_test, subset_size):
     print()
-    print('Train SVM:')
+    print('Train SVM')
 
     grid_params = {'kernel': ['linear', 'rbf'], 'C': [0.1, 1., 10.], 'tol': [0.001, 0.01]}
     clf = GridSearchCV(SVC(), grid_params, cv=3, n_jobs=-1)
@@ -453,7 +452,7 @@ def train_svm_on_codes(X_codes, y, X_codes_test, y_test, subset_size):
 
 def train_best_svm_on_codes(X_codes, y, X_codes_test, y_test, subset_size, best_params):
     print()
-    print('Train best SVM:')
+    print('Train best SVM')
 
     clf = SVC()
     clf.set_params(**best_params)
@@ -528,6 +527,50 @@ def train_nn(X_codes, y, X_codes_test, y_test, subset_size):
     return clf
 
 
+
+# Voting ensemble
+def vote(ys):
+    """
+    :param ys: list of predictions (numpy array) for different classifiers
+    :return: prediction after voting
+    """
+    y_len = len(ys[0])
+    img_ids = np.arange(y_len)
+
+    ys_votes = np.zeros((y_len, CLASS_CNT), dtype='int32')
+    for y in ys:
+        # each y gives one vote for each image
+        ys_votes[img_ids, np.asarray(y, dtype='int32')] += 1
+
+    # Retrieve classes with highest scores
+    argmaxes = np.argmax(ys_votes, axis=1)
+    maxes = np.max(ys_votes, axis=1)
+
+    # final decision: if at least two votes were given for the best class, choose it
+    # otherwise, pick the strongest (first) classifier
+    return np.where(maxes >= 2, argmaxes, ys[0])
+
+
+def test_voting_ensemble(clf_svm, clf_rf, clf_nn, X_codes_test, y_test):
+    nn_test_input_fn = tf.estimator.inputs.numpy_input_fn(
+        x={"x": X_codes_test},
+        num_epochs=1,
+        shuffle=False
+    )
+
+    y_pred = [
+        clf_svm.predict(X_codes_test),
+        clf_rf.predict(X_codes_test),
+        [pred['class_ids'][0] for pred in list(clf_nn.predict(nn_test_input_fn))]
+    ]
+
+    y = vote(y_pred)
+
+    print()
+    print('Voting score on test set:')
+    print(accuracy_score(y, y_test))
+
+
 def main():
     X, y, X_test, y_test = prepare_data()
     plot_sample_images(X, y)
@@ -542,10 +585,12 @@ def main():
 
     clf_svm = train_svm_on_codes(X_codes, y, X_codes_test, y_test, 1000)
     clf_rf = train_random_forest(X_codes, y, X_codes_test, y_test, 1000)
-    clf_nn = train_nn(X_codes, y, X_codes_test, y_test, 10000)
 
+    clf_nn = train_nn(X_codes, y, X_codes_test, y_test, 10000)
     clf_svm_best = train_best_svm_on_codes(X_codes, y, X_codes_test, y_test, 10000, clf_svm.best_params_)
     clf_rf_best = train_best_random_forest(X_codes, y, X_codes_test, y_test, 10000, clf_rf.best_params_)
+
+    test_voting_ensemble(clf_svm_best, clf_rf_best, clf_nn, X_codes_test, y_test)
 
 
 if __name__ == '__main__':
