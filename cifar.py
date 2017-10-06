@@ -17,10 +17,11 @@ import matplotlib.pyplot as plt
 from skimage.feature import hog
 from skimage import color
 
-from sklearn.decomposition import PCA, KernelPCA
+from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.externals import joblib
 from sklearn.manifold import TSNE
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
@@ -178,8 +179,8 @@ hogs = FunctionTransformer(cifar_to_hog)
 
 
 # Save and load models from disk
-def save_model(filename, model):
-    joblib.dump(filename, model)
+def save_model(model, filename):
+    joblib.dump(model, filename)
 
 
 def load_model(filename):
@@ -192,16 +193,22 @@ def choose_random_subset(X, y, subset_size):
 
 
 def evaluate_model(clf, X, y):
-    return clf.score(X, y)
+    score = clf.score(X, y)
+    print('Score: %f' % score)
 
 
-def train_model(clf, X, y, subset_size=None):
+def train_model(clf, X, y, subset_size=None, clf_file=None):
     """
     Train 'clf' on X, y and test on X_test, y_test.
 
     :param clf: sklearn classifier
-    :param subset: if not None, the size of (randomly chosen) subset of X, y to use for training
+    :param subset_size: if not None, the size of (randomly chosen) subset of X, y to use for training
+    :param clf_file: load model from this file, or save model there after training
+
      """
+
+    if clf_file is not None and os.path.exists(clf_file):
+        return load_model(clf_file)
 
     if subset_size is not None:
         X, y = choose_random_subset(X, y, subset_size)
@@ -214,19 +221,25 @@ def train_model(clf, X, y, subset_size=None):
     print('Fitting done.')
     print('Time elapsed: %0.03fs' % (end - start,))
 
+    if clf_file is not None:
+        if not os.path.exists('models/'):
+            os.makedirs('models/')
+        save_model(clf, clf_file)
+
     return clf
 
 
 # Estimator fitting
-def train_test_grid_search_model(clf, X, y, X_test, y_test, subset_size=None):
+def train_test_grid_search_model(clf, X, y, X_test, y_test, subset_size=None, clf_file=None):
     """
     Train GridSearch 'clf' on X, y and test on X_test, y_test.
 
     :param clf: GridSearch classifier
-    :param subset: if not None, the size of (randomly chosen) subset of X, y to use for training
+    :param subset_size: if not None, the size of (randomly chosen) subset of X, y to use for training
+    :param clf_file: load model from this file, or save model there after training
      """
 
-    clf = train_model(clf, X, y, subset_size)
+    clf = train_model(clf, X, y, subset_size, clf_file)
 
     # Grid search summary
     print('Best parameters set found on training set:')
@@ -243,7 +256,7 @@ def train_test_grid_search_model(clf, X, y, X_test, y_test, subset_size=None):
               % (mean, std * 2, params))
     print()
     print('Score on test set:')
-    print(evaluate_model(clf, X_test, y_test))
+    print(clf.score(X_test, y_test))
 
     return clf
 
@@ -255,15 +268,15 @@ def train_shallow_classifier(X, y, X_test, y_test, subset_size):
 
     pipe = Pipeline([('hog', hogs), ('norm', StandardScaler()), ('svc', SVC())], memory=cachedir)
 
-    Cs = np.logspace(0, 1, 2)
-    grid_params = [{'svc__kernel': ['rbf'], 'svc__C': [1., 10.]},
+    grid_params = [{'svc__kernel': ['rbf'], 'svc__C': [0.1, 1., 10.]},
                    {'svc__kernel': ['linear'], 'svc__C': [1.]}]
 
     clf = GridSearchCV(pipe, grid_params, cv=3, n_jobs=-1)
 
-    train_test_grid_search_model(clf, X, y, X_test, y_test, subset_size)
+    train_test_grid_search_model(clf, X, y, X_test, y_test, subset_size, clf_file='models/shallow.pkl')
 
     rmtree(cachedir)
+    return clf
 
 
 ###############################################################################
@@ -432,31 +445,50 @@ def train_svm_on_codes(X_codes, y, X_codes_test, y_test, subset_size):
     print()
     print('Train SVM:')
 
-    grid_params = [{'svc__kernel': ['rbf'], 'svc__C': [1., 10.]},
-                   {'svc': [LinearSVC()], 'svc__C': [0.1, 1., 10.]}]
-    pipe = make_pipeline(SVC())
+    grid_params = {'kernel': ['linear', 'rbf'], 'C': [0.1, 1., 10.], 'tol': [0.001, 0.01]}
+    clf = GridSearchCV(SVC(), grid_params, cv=3, n_jobs=-1)
+    clf = train_test_grid_search_model(clf, X_codes, y, X_codes_test, y_test, subset_size, 'models/svm.pkl')
+    return clf
 
-    clf = GridSearchCV(pipe, grid_params, cv=3, n_jobs=-1)
-    clf = train_test_grid_search_model(clf, X_codes, y, X_codes_test, y_test, subset_size)
 
-    # TODO:
-    # save_model('svm_cv.pkl', clf)
+def train_best_svm_on_codes(X_codes, y, X_codes_test, y_test, subset_size, best_params):
+    print()
+    print('Train best SVM:')
+
+    clf = SVC()
+    clf.set_params(**best_params)
+    clf = train_model(clf, X_codes, y, subset_size, 'models/svm_best.pkl')
+    evaluate_model(clf, X_codes_test, y_test)
     return clf
 
 
 ###############################################################################
 # 8. Further improvements
 
+# Random forest
 def train_random_forest(X_codes, y, X_codes_test, y_test, subset_size):
     print()
     print('Train RandomForest')
 
-    clf = RandomForestClassifier(n_estimators=100)
-    clf = train_model(clf, X_codes, y, subset_size=subset_size)
-    print(evaluate_model(clf, X_codes_test, y_test))
+    grid_params = {'n_estimators': [10, 100, 1000]}
+    clf = GridSearchCV(RandomForestClassifier(), param_grid=grid_params)
+
+    clf = train_test_grid_search_model(clf, X_codes, y, X_codes_test, y_test, subset_size, 'models/rf.pkl')
     return clf
 
 
+def train_best_random_forest(X_codes, y, X_codes_test, y_test, subset_size, best_params):
+    print()
+    print('Train RandomForest')
+
+    clf = RandomForestClassifier()
+    clf.set_params(**best_params)
+    clf = train_model(clf, X_codes, y, subset_size, 'models/rf_best.pkl')
+    evaluate_model(clf, X_codes_test, y_test)
+    return clf
+
+
+# Neural network
 def train_nn(X_codes, y, X_codes_test, y_test, subset_size):
     """ Train a simple neural network. """
     print()
@@ -468,6 +500,7 @@ def train_nn(X_codes, y, X_codes_test, y_test, subset_size):
         feature_columns=[tf.feature_column.numeric_column("x", shape=[NUM_FEATURES])],
         hidden_units=[30],
         n_classes=10,
+        model_dir='models/nn'
     )
 
     # Training inputs
@@ -479,7 +512,7 @@ def train_nn(X_codes, y, X_codes_test, y_test, subset_size):
         shuffle=False
     )
 
-    clf.train(input_fn=train_input_fn, steps=2000)
+    clf.train(input_fn=train_input_fn, max_steps=2000)
 
     # Define the test inputs
     test_input_fn = tf.estimator.inputs.numpy_input_fn(
@@ -491,6 +524,7 @@ def train_nn(X_codes, y, X_codes_test, y_test, subset_size):
 
     print()
     accuracy_score = clf.evaluate(input_fn=test_input_fn)["accuracy"]
+    print('Accuracy: %f' % accuracy_score)
     return clf
 
 
@@ -498,15 +532,20 @@ def main():
     X, y, X_test, y_test = prepare_data()
     plot_sample_images(X, y)
 
-    train_shallow_classifier(X, y, X_test, y_test, 10000)
+    clf_sh = train_shallow_classifier(X, y, X_test, y_test, 1000)
 
     X_codes, X_codes_test = compute_cnn_codes(X, X_test)
     X_codes, X_codes_test = normalize_data(X_codes, X_codes_test)
-    visualize_cnn_codes(X_codes, y, 5000)
+    visualize_cnn_codes(X_codes, y, 1000)
 
-    train_svm_on_codes(X_codes, y, X_codes_test, y_test, 1000)
-    train_random_forest(X_codes, y, X_codes_test, y_test, 1000)
-    train_nn(X_codes, y, X_codes_test, y_test, 10000)
+    del X   # free memory no longer needed
+
+    clf_svm = train_svm_on_codes(X_codes, y, X_codes_test, y_test, 1000)
+    clf_rf = train_random_forest(X_codes, y, X_codes_test, y_test, 1000)
+    clf_nn = train_nn(X_codes, y, X_codes_test, y_test, 10000)
+
+    clf_svm_best = train_best_svm_on_codes(X_codes, y, X_codes_test, y_test, 10000, clf_svm.best_params_)
+    clf_rf_best = train_best_random_forest(X_codes, y, X_codes_test, y_test, 10000, clf_rf.best_params_)
 
 
 if __name__ == '__main__':
